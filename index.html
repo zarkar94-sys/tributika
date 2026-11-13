@@ -757,6 +757,10 @@
                             <label class="block text-[11px] font-semibold text-slate-600 mb-1">Nombre / Razón Social</label>
                             <input type="text" id="cliNombre" placeholder="Empresa PY S.A." required class="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs">
                         </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Nombre de fantasía <span class="font-normal text-slate-400">(opcional)</span></label>
+                            <input type="text" id="cliFantasia" maxlength="60" placeholder="Ferretería El Tornillo" class="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs">
+                        </div>
                         <div>
                             <label class="block text-[11px] font-semibold text-slate-600 mb-1">Tipo de IRE</label>
                             <select id="cliIre" class="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs">
@@ -1463,17 +1467,20 @@ async function subscribeActiveClient(silent) {
 // ============================================================
 // CLIENTE ACTIVO Y ROLES
 // ============================================================
+// Nombre de fantasía opcional: en pantalla se muestra el de fantasía; el nombre legal queda para reportes y libros
+function shownName(c) { return c ? (c.fantasia || c.nombre || '') : ''; }
+function fullName(c) { return c ? (c.fantasia ? `${c.nombre} (${c.fantasia})` : (c.nombre || '')) : ''; }
 function populateClientSelector() {
     const select = document.getElementById('globalClientSelect');
     select.innerHTML = state.clients.map(c =>
-        `<option value="${esc(c.id)}" ${c.id === state.activeClientId ? 'selected' : ''}>${esc(c.nombre)}</option>`
+        `<option value="${esc(c.id)}" ${c.id === state.activeClientId ? 'selected' : ''}>${esc(shownName(c))}</option>`
     ).join('');
     updateActiveClientBanner();
     renderBranding();
 }
 
 // Logo y nombre de la empresa: el cliente con una sola empresa no ve selector, ve su marca
-function logoImg(c, cls) { return c && c.logo ? `<img src="${esc(c.logo)}" alt="Logo de ${esc(c.nombre)}" class="${cls}">` : ''; }
+function logoImg(c, cls) { return c && c.logo ? `<img src="${esc(c.logo)}" alt="Logo de ${esc(shownName(c))}" class="${cls}">` : ''; }
 function renderBranding() {
     const c = state.clients.find(x => x.id === state.activeClientId);
     const single = state.role !== 'admin' && state.clients.length <= 1;
@@ -1486,7 +1493,7 @@ function renderBranding() {
     let nm = document.getElementById('clientStaticName');
     if (!nm) { nm = document.createElement('span'); nm.id = 'clientStaticName'; nm.className = 'text-xs font-bold text-slate-800 px-2 max-w-[200px] truncate'; sel.after(nm); }
     nm.classList.toggle('hidden', !single);
-    nm.textContent = c ? c.nombre : '';
+    nm.textContent = shownName(c);
     const w = document.getElementById('welcomeLogo');
     if (w) { w.innerHTML = c && c.logo ? `<span class="bg-white rounded-xl p-2 inline-flex">${logoImg(c, 'h-12 max-w-[140px] object-contain')}</span>` : ''; }
 }
@@ -1513,8 +1520,8 @@ function updateActiveClientBanner() {
         document.getElementById('activeClientDetails').innerText = '';
         return;
     }
-    document.getElementById('activeClientNameBanner').innerText = `${client.nombre} (${client.ruc})`;
-    document.getElementById('activeClientTitle').innerText = client.nombre;
+    document.getElementById('activeClientNameBanner').innerText = `${shownName(client)} (${client.ruc})`;
+    document.getElementById('activeClientTitle').innerText = shownName(client);
     document.getElementById('activeClientRuc').innerText = `RUC: ${client.ruc}`;
     document.getElementById('activeClientDetails').innerText = `Régimen: ${client.ire} | ${client.iva}`;
 }
@@ -2186,6 +2193,7 @@ async function handleClientSubmit(e) {
     e.preventDefault();
     const ruc = document.getElementById('cliRuc').value.trim();
     const nombre = document.getElementById('cliNombre').value.trim();
+    const fantasia = document.getElementById('cliFantasia').value.trim();
     const ire = document.getElementById('cliIre').value;
     const iva = document.getElementById('cliIva').value;
     const logo = state.logoDraft;   // undefined = sin cambios
@@ -2196,9 +2204,9 @@ async function handleClientSubmit(e) {
 
     try {
         if (state.editingClientId) {
-            await api('saveClient', { id: state.editingClientId, data: { ruc, nombre, ire, iva, logo } });
+            await api('saveClient', { id: state.editingClientId, data: { ruc, nombre, fantasia, ire, iva, logo } });
         } else {
-            const created = await api('saveClient', { data: { ruc, nombre, ire, iva, logo } });
+            const created = await api('saveClient', { data: { ruc, nombre, fantasia, ire, iva, logo } });
             state.activeClientId = created.id;
             delete sigs.active;
         }
@@ -2217,6 +2225,7 @@ function editClient(id) {
     state.editingClientId = id;
     document.getElementById('cliRuc').value = cli.ruc;
     document.getElementById('cliNombre').value = cli.nombre;
+    document.getElementById('cliFantasia').value = cli.fantasia || '';
     document.getElementById('cliIre').value = cli.ire;
     document.getElementById('cliIva').value = cli.iva;
     state.logoDraft = undefined; showLogoPreview(cli.logo || '');
@@ -2277,7 +2286,7 @@ function renderClientListTable() {
     container.innerHTML = state.clients.map(c => `
         <div class="p-3 bg-white flex items-center justify-between hover:bg-slate-50 transition-colors">
             <div>
-                <span class="font-bold text-xs text-slate-900 block">${esc(c.nombre)}</span>
+                <span class="font-bold text-xs text-slate-900 block">${esc(shownName(c))}${c.fantasia ? ` <span class="font-normal text-slate-400">· ${esc(c.nombre)}</span>` : ''}</span>
                 <span class="text-[10px] text-slate-400 tabular-nums">RUC: ${esc(c.ruc)} | ${esc(c.ire)}</span>
             </div>
             <div class="flex items-center gap-2">
@@ -2321,7 +2330,7 @@ function renderUsersList() {
         const checks = state.clients.map(cl => `
             <label class="flex items-center gap-1.5 text-[11px] text-slate-600">
                 <input type="checkbox" data-uid="${esc(u.uid)}" value="${esc(cl.id)}" ${(u.clientIds || []).includes(cl.id) ? 'checked' : ''}>
-                ${esc(cl.nombre)}
+                ${esc(shownName(cl))}
             </label>`).join('') || '<span class="text-[11px] text-slate-400">No hay clientes cargados</span>';
         const pendingBadge = u.role === 'pending'
             ? '<span class="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">Pendiente</span>' : '';
@@ -2354,7 +2363,7 @@ function renderUsersList() {
 function renderNewUserClients() {
     document.getElementById('newUserClients').innerHTML = state.clients.map(cl => `
         <label class="flex items-center gap-1.5 text-[11px] text-slate-600">
-            <input type="checkbox" value="${esc(cl.id)}"> ${esc(cl.nombre)}
+            <input type="checkbox" value="${esc(cl.id)}"> ${esc(shownName(cl))}
         </label>`).join('') || '<span class="text-[11px] text-slate-400">No hay clientes cargados</span>';
 }
 
@@ -3206,7 +3215,7 @@ function summaryCardHtml(s) {
     const [elabel, ecls] = ESTADO_UI[s.estado] || ESTADO_UI.pendiente;
     return `<div class="space-y-4 text-xs">
         <div><h3 class="text-base font-bold text-slate-900">Resumen de ${esc(s.etiqueta)}</h3>
-            <p class="text-slate-500">${esc(s.cliente.nombre)} · RUC ${esc(s.cliente.ruc)} · ${s.cantidad} comprobante${s.cantidad === 1 ? '' : 's'}${s.anuladas ? ` (${s.anuladas} anulada${s.anuladas === 1 ? '' : 's'}, sin importes)` : ''}</p></div>
+            <p class="text-slate-500">${esc(fullName(s.cliente))} · RUC ${esc(s.cliente.ruc)} · ${s.cantidad} comprobante${s.cantidad === 1 ? '' : 's'}${s.anuladas ? ` (${s.anuladas} anulada${s.anuladas === 1 ? '' : 's'}, sin importes)` : ''}</p></div>
         <div class="grid grid-cols-2 gap-3">
             ${box('Ventas', gs(s.ventas), cmp(s.ventas, s.anterior.ventas))}${box('Compras', gs(s.compras), cmp(s.compras, s.anterior.compras))}
             ${box('IVA débito', gs(s.ivaDebito))}${box('IVA crédito', gs(s.ivaCredito))}
@@ -4232,7 +4241,7 @@ async function exportBackup() {
         const all = await api('backup');
         const out = { app: 'Tributika', version: 2, exportedAt: new Date().toISOString(), clients: [], receipts: {}, ddjj: {} };
         all.clients.forEach(c => {
-            out.clients.push({ id: c.id, ruc: c.ruc, nombre: c.nombre, ire: c.ire, iva: c.iva });
+            out.clients.push({ id: c.id, ruc: c.ruc, nombre: c.nombre, fantasia: c.fantasia || '', ire: c.ire, iva: c.iva });
             out.receipts[c.id] = (all.receipts[c.id] || []).map(stripMeta);
             out.ddjj[c.id] = (all.ddjj[c.id] || []).map(stripMeta);
         });
@@ -4296,7 +4305,7 @@ async function handleBackupFile(e) {
 
             let cid = state.clients.find(c => c.ruc === oc.ruc)?.id;
             if (!cid) {
-                const created = await api('saveClient', { data: { ruc: oc.ruc, nombre: oc.nombre, ire: oc.ire || 'IRE General (10%)', iva: oc.iva || 'IVA Mensual' } });
+                const created = await api('saveClient', { data: { ruc: oc.ruc, nombre: oc.nombre, fantasia: oc.fantasia || '', ire: oc.ire || 'IRE General (10%)', iva: oc.iva || 'IVA Mensual' } });
                 cid = created.id;
                 counts.clients++;
             }
