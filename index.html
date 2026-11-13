@@ -1011,14 +1011,21 @@
                 <p class="text-xs text-slate-500">
                     Suba una foto o captura de la factura. Si es <strong>factura electrónica</strong> se lee el código QR (exacto).
                     Si no hay QR se lee el texto de la imagen (OCR), que puede equivocarse: <strong>siempre revise los datos</strong> antes de guardar.
-                    Puede elegir <strong>varias fotos a la vez</strong>: se leen una por una y las revisa en una lista antes de guardar. La imagen se procesa en este navegador y no se sube a ningún servidor.
+                    Puede elegir <strong>varias fotos a la vez</strong>: se leen una por una y las revisa en una lista antes de guardar. La imagen se procesa en este navegador; solo se envía fuera si usted pulsa «Leer con IA».
                 </p>
                 <input type="file" id="scanFile" accept="image/*" multiple onchange="handleScanFile(event)" class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 bg-slate-50 border border-slate-200 rounded-xl">
                 <div id="scanSingle" class="space-y-4">
                 <img id="scanPreview" alt="Vista previa de la factura" class="hidden max-h-48 mx-auto rounded-lg border border-slate-200">
                 <div id="scanStatus" class="hidden text-xs text-slate-600" role="status"></div>
                 <div id="scanResult" class="hidden text-xs bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1"></div>
+                <details class="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <summary class="cursor-pointer font-semibold text-slate-600">¿Letra a mano o sin QR? Pegar texto de la factura</summary>
+                    <p class="text-slate-500 mt-2">En iPhone: abra la foto, mantenga pulsado el texto, elija <em>Copiar todo</em> y péguelo aquí. Se interpreta en este navegador.</p>
+                    <textarea id="scanPaste" rows="4" maxlength="6000" placeholder="Pegue aquí el texto copiado" class="w-full mt-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"></textarea>
+                    <button type="button" onclick="runScanPaste()" class="mt-2 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl">Leer texto pegado</button>
+                </details>
                 <div class="flex flex-wrap justify-end gap-2">
+                    <button type="button" id="btnScanAi" onclick="runScanAi()" class="hidden px-3 py-2 bg-accent-500 hover:bg-accent-600 text-white text-xs font-semibold rounded-xl"><i class="fa-solid fa-wand-magic-sparkles"></i> Leer con IA (manuscrito)</button>
                     <button type="button" id="btnScanOcr" onclick="runScanOcr()" class="hidden px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl">Completar con OCR (timbrado, razón social)</button>
                     <button type="button" id="btnScanApply" onclick="applyScanToForm()" disabled class="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white text-xs font-semibold rounded-xl">Pasar al formulario</button>
                 </div>
@@ -1942,7 +1949,8 @@ function resetScan() {
     const prev = document.getElementById('scanPreview');
     if (prev.src && prev.src.startsWith('blob:')) URL.revokeObjectURL(prev.src);
     prev.removeAttribute('src'); prev.classList.add('hidden');
-    ['scanStatus', 'scanResult', 'btnScanOcr'].forEach(id => document.getElementById(id).classList.add('hidden'));
+    ['scanStatus', 'scanResult', 'btnScanOcr', 'btnScanAi'].forEach(id => document.getElementById(id).classList.add('hidden'));
+    document.getElementById('scanPaste').value = '';
     document.getElementById('btnScanApply').disabled = true;
 }
 function setScanStatus(msg) {
@@ -1972,7 +1980,10 @@ async function findSifenQr(bitmap) {
             }
         } catch (e) { /* se sigue con jsQR */ }
     }
-    if (!window.jsQR) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js');
+    if (!window.jsQR) {
+        // Si la biblioteca de QR no carga, no se corta el escaneo: se sigue con OCR
+        try { await loadScript('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'); } catch (e) { return null; }
+    }
     for (const side of [3200, 1600, 1000]) {
         const c = drawScaled(bitmap, side, false);
         const img = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height);
@@ -1983,7 +1994,10 @@ async function findSifenQr(bitmap) {
 }
 
 async function ocrBitmap(bitmap) {
-    if (!window.Tesseract) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js');
+    if (!window.Tesseract) {
+        try { await loadScript('https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js'); }
+        catch (e) { await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js'); }
+    }
     const worker = await window.Tesseract.createWorker('spa', 1, {
         logger: m => { if (m.status) setScanStatus(`Leyendo texto… ${m.status}${m.progress != null ? ' ' + Math.round(m.progress * 100) + '%' : ''} (la primera vez descarga el idioma)`); }
     });
@@ -2021,6 +2035,7 @@ async function handleScanFile(e) {
     try {
         setScanStatus('Preparando imagen…');
         scanState.bitmap = await createImageBitmap(file);
+        if (state.role === 'admin') document.getElementById('btnScanAi').classList.remove('hidden');
         setScanStatus('Buscando el código QR…');
         const qr = await findSifenQr(scanState.bitmap);
         if (qr) {
@@ -2062,6 +2077,68 @@ async function runScanOcr() {
     }
 }
 
+// Opción 2: texto copiado desde el teléfono (Live Text) o desde cualquier otra parte
+function runScanPaste() {
+    const text = document.getElementById('scanPaste').value.trim();
+    if (text.length < 10) { setScanStatus('Pegue primero el texto de la factura.'); return; }
+    const res = parseInvoiceText(text, clientRucActive());
+    if (!res.fields.razon) res.fields.razon = knownRazon(res.fields.ruc);
+    res.source = 'TEXTO';
+    showScanResult(res);
+    setScanStatus('');
+}
+
+// Opción 3: lectura con IA (Gemini) a través del script del administrador
+let aiConsent = false;
+function normRucAi(s) {
+    const t = String(s || '').replace(/[\s.]/g, '');
+    let m = /^(\d{5,9})-(\d)$/.exec(t);
+    if (m) return `${parseInt(m[1], 10)}-${m[2]}`;
+    m = /^(\d{5,9})$/.exec(t);
+    return m ? `${parseInt(m[1], 10)}-${calcDv(m[1])}` : '';
+}
+function scanFromAi(r, clientRuc) {
+    const digits = x => String(x || '').split('-')[0].replace(/^0+/, '');
+    const mine = digits(clientRuc), warnings = ['Leído con IA: revise cada dato, sobre todo montos, RUC y fecha escritos a mano.'];
+    const emisor = normRucAi(r.emisorRuc), receptor = normRucAi(r.receptorRuc);
+    const dir = mine && emisor && digits(emisor) === mine ? 'Venta' : 'Compra';
+    if (mine && digits(emisor) !== mine && digits(receptor) !== mine) warnings.push('Ni el emisor ni el receptor coinciden con el RUC del cliente activo.');
+    const tercero = dir === 'Venta' ? receptor : emisor;
+    const razon = dir === 'Venta' ? r.receptorNombre : r.emisorNombre;
+    const fields = { tipo: `Factura ${dir}`, ruc: tercero, razon: razon || '', timbrado: /^\d{8}$/.test(r.timbrado) ? r.timbrado : '' };
+    const nm = /^(\d{3})\D*(\d{3})\D*(\d{7})$/.exec(String(r.numero || '').trim());
+    if (nm) fields.numero = `${nm[1]}-${nm[2]}-${nm[3]}`;
+    const f = r.fecha ? parseImportDate(r.fecha) : null;
+    if (f) fields.fecha = f;
+    if (r.monto) fields.monto = r.monto;
+    fields.tasa = r.tasa === null || r.tasa === undefined ? 10 : r.tasa;
+    if (r.tasa === null || r.tasa === undefined) warnings.push('No se pudo leer la tasa de IVA; se dejó 10%.');
+    if (tercero && !validateRuc(tercero).dvOk) warnings.push('El dígito verificador del RUC leído no coincide: probablemente un dígito está mal.');
+    ['numero', 'fecha', 'monto'].forEach(k => { if (!fields[k]) warnings.push(`No se pudo leer: ${ { numero: 'Nº de comprobante', fecha: 'fecha', monto: 'monto' }[k] }.`); });
+    if (!tercero) warnings.push('No se pudo leer el RUC del tercero.');
+    return { source: 'IA', fields, warnings, missing: [] };
+}
+async function runScanAi() {
+    if (!scanState.bitmap) return;
+    if (!aiConsent) {
+        if (!confirm('La foto se enviará a Google (Gemini) para leerla. Hágalo solo con facturas que pueda compartir. ¿Continuar?')) return;
+        aiConsent = true;
+    }
+    const btn = document.getElementById('btnScanAi');
+    btn.disabled = true;
+    try {
+        setScanStatus('Leyendo con IA…');
+        const jpg = drawScaled(scanState.bitmap, 1600, false).toDataURL('image/jpeg', 0.85).split(',')[1];
+        const r = await api('ocrAi', { image: jpg });
+        const res = scanFromAi(r, clientRucActive());
+        if (!res.fields.razon) res.fields.razon = knownRazon(res.fields.ruc);
+        showScanResult(res);
+        setScanStatus('');
+    } catch (err) {
+        setScanStatus('No se pudo leer con IA: ' + err.message);
+    } finally { btn.disabled = false; }
+}
+
 function showScanResult(res) {
     scanState.result = res;
     const f = res.fields;
@@ -2071,7 +2148,7 @@ function showScanResult(res) {
         ['Tasa IVA', f.tasa != null ? (f.tasa === 0 ? 'Exento' : f.tasa + '%') : '']
     ];
     const box = document.getElementById('scanResult');
-    box.innerHTML = `<div class="font-bold text-slate-800 mb-1">Datos leídos (${res.source === 'QR' ? 'código QR' : 'OCR, a verificar'})</div>`
+    box.innerHTML = `<div class="font-bold text-slate-800 mb-1">Datos leídos (${ { QR: 'código QR', IA: 'IA, a verificar', TEXTO: 'texto pegado, a verificar' }[res.source] || 'OCR, a verificar' })</div>`
         + rows.map(([k, v]) => `<div class="flex justify-between gap-3"><span class="text-slate-500">${esc(k)}</span><span class="font-semibold ${v ? 'text-slate-800' : 'text-red-500'}">${v ? esc(String(v)) : 'sin dato'}</span></div>`).join('')
         + res.warnings.map(w => `<div class="text-amber-700 mt-1"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(w)}</div>`).join('')
         + (res.missing && res.missing.length ? `<div class="text-slate-500 mt-1">El QR no trae: ${esc(res.missing.join(', '))}.</div>` : '');
@@ -2100,7 +2177,7 @@ function applyScanToForm() {
     if (!f.razon) pend.push('razón social');
     if (!f.timbrado) pend.push('timbrado');
     const notice = document.getElementById('scanNotice');
-    notice.innerHTML = `<i class="fa-solid fa-camera"></i> Datos cargados desde la factura (${res.source === 'QR' ? 'QR' : 'OCR'}). <strong>Revíselos antes de guardar.</strong>`
+    notice.innerHTML = `<i class="fa-solid fa-camera"></i> Datos cargados desde la factura (${ { QR: 'QR', IA: 'IA', TEXTO: 'texto pegado' }[res.source] || 'OCR' }). <strong>Revíselos antes de guardar.</strong>`
         + (pend.length ? ` Falta completar: ${esc(pend.join(', '))}.` : '')
         + res.warnings.map(w => `<div class="mt-1">• ${esc(w)}</div>`).join('');
     notice.classList.remove('hidden');
@@ -4744,7 +4821,7 @@ Object.assign(window, {
     openUsersModal, closeUsersModal, saveUser, createUserByAdmin, resendAccess, deleteUserAccount,
     openImportModal, closeImportModal, handleImportFile, reprocessImport, confirmImport, downloadImportTemplate,
     exportBackup, handleBackupFile, generateLibro, onTipoChange,
-    openScanModal, closeScanModal, handleScanFile, runScanOcr, applyScanToForm,
+    openScanModal, closeScanModal, handleScanFile, runScanOcr, runScanPaste, runScanAi, applyScanToForm,
     loadControl, toggleClosing, saveClosingNote, goRevision, openConfigModal, closeConfigModal, saveConfig, toggleAlerts, sendAlertsNow,
     onLogoPicked, clearLogo, setSide, toggleAdminMenu, adminMenuGo, openViewAsModal, closeViewAsModal, enterViewAs, exitViewAs,
     openLiqModal, closeLiqModal, liqRecalc, saveLiq,
