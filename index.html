@@ -438,7 +438,7 @@
                             Limpiar
                         </button>
                         <button type="submit" id="btnSubmitForm" class="px-5 py-2 bg-brand-600 hover:bg-brand-700 text-white text-xs font-semibold rounded-xl shadow-md transition-all flex items-center gap-2">
-                            <i class="fa-solid fa-plus"></i> Guardar en Cliente
+                            <i class="fa-solid fa-plus"></i> Guardar comprobante
                         </button>
                     </div>
                 </form>
@@ -1206,7 +1206,8 @@ async function api(action, payload) {
             body: JSON.stringify({ token, action, payload: payload || {}, viewAs: state.viewAs || undefined })
         });
     } catch (e) {
-        throw new Error('Sin conexión con el servidor. Revise su internet.');
+        // fetch solo falla sin respuesta legible: sin internet, o Apps Script devolvió una página de error (sin permisos CORS)
+        throw new Error('Sin conexión con el servidor. Revise su internet. (' + action + ': ' + (e && e.message || 'error de red') + ')');
     }
     if (!res.ok) throw new Error('El servidor respondió con error ' + res.status + '.');
     let r;
@@ -1749,7 +1750,7 @@ function resetForm() {
     onTipoChange();
     document.getElementById('inputFecha').value = todayLocal();
     state.editingId = null;
-    document.getElementById('btnSubmitForm').innerHTML = `<i class="fa-solid fa-plus"></i> Guardar en Cliente`;
+    document.getElementById('btnSubmitForm').innerHTML = `<i class="fa-solid fa-plus"></i> Guardar comprobante`;
     autoCalculateTax();
 }
 
@@ -2160,7 +2161,7 @@ async function runScanAi() {
     btn.disabled = true;
     try {
         setScanStatus('Leyendo con IA…');
-        const jpg = drawScaled(scanState.bitmap, 1600, false).toDataURL('image/jpeg', 0.85).split(',')[1];
+        const jpg = drawScaled(scanState.bitmap, 1280, false).toDataURL('image/jpeg', 0.75).split(',')[1];   // ~250 KB: suficiente para leer y liviano para enviar
         const r = await api('ocrAi', { image: jpg });
         const res = scanFromAi(r, clientRucActive());
         useKnownRazon(res);
