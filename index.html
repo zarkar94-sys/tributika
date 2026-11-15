@@ -293,13 +293,13 @@
             </div>
 
             <!-- FORMULARIO DE CARGA DE COMPROBANTES (ADMIN ONLY) -->
-            <div id="adminFormSection" class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6 transition-all">
-                <div class="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
-                    <div class="flex items-center gap-2">
+            <div id="adminFormSection" class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-4 sm:p-6 transition-all overflow-hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-3">
+                    <div class="flex items-center gap-2 min-w-0">
                         <i class="fa-solid fa-receipt text-brand-600 text-lg"></i>
                         <h2 class="font-bold text-slate-900 text-base" id="formTitle">Cargar Comprobante Tributario</h2>
                     </div>
-                    <div class="flex items-center gap-3">
+                    <div class="flex flex-wrap items-center gap-2 sm:gap-3">
                         <span class="hidden sm:inline text-xs font-medium text-slate-400">Imputación directa al cliente activo</span>
                         <button type="button" onclick="openScanModal()" class="px-3 py-1.5 bg-brand-50 hover:bg-brand-100 text-brand-700 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors">
                             <i class="fa-solid fa-camera"></i> Escanear factura
@@ -310,11 +310,11 @@
                     </div>
                 </div>
 
-                <form id="taxForm" onsubmit="handleFormSubmit(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+                <form id="taxForm" onsubmit="handleFormSubmit(event)" class="grid grid-cols-1 min-w-0 sm:grid-cols-2 lg:grid-cols-6 gap-4">
                     <div id="scanNotice" class="hidden sm:col-span-2 lg:col-span-6 bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-xl p-3"></div>
-                    <div>
+                    <div class="min-w-0">
                         <label class="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
-                        <input type="date" id="inputFecha" required class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none">
+                        <input type="date" id="inputFecha" required class="block w-full min-w-0 max-w-full appearance-none text-left px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none">
                     </div>
 
                     <div>
@@ -1832,7 +1832,8 @@ function scanFromQr(qr, clientRuc) {
 
 // Interpreta el texto reconocido por OCR. Todo es "mejor esfuerzo": el usuario revisa.
 function parseInvoiceText(raw, clientRuc) {
-    const text = String(raw || '').replace(/\r/g, '');
+    const reread = /#NUM:(\d{7})/.exec(String(raw || ''));   // correlativo releído solo con dígitos (ver ocrBitmap)
+    const text = String(raw || '').replace(/\r/g, '').replace(/#NUM:\d+\n?/g, '');
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const fields = {};
     const warnings = [];
@@ -1846,6 +1847,11 @@ function parseInvoiceText(raw, clientRuc) {
         const seven = lines.map(l => l.replace(/\s/g, '')).find(l => /^\d{7}$/.test(l));
         if (n2) { fields.numero = `${n2[1]}-${n2[2]}-${n2[3]}`; warnings.push('El Nº de comprobante se leyó en partes: verifique el último grupo de dígitos.'); }
         else if (pair && seven) { fields.numero = `${pair[1]}-${pair[2]}-${seven}`; warnings.push('El Nº de comprobante se leyó en partes: verifique el último grupo de dígitos.'); }
+    }
+    if (reread) {
+        // el correlativo es el número grande, que la lectura de página confunde; releído solo con dígitos suele acertar
+        const pf = /(?<!\d)(\d{3})\s*[-–—]\s*(\d{3})(?!\d)/.exec(text);
+        if (pf) { fields.numero = `${pf[1]}-${pf[2]}-${reread[1]}`; warnings.splice(0, warnings.length, ...warnings.filter(w => !/Nº de comprobante se leyó en partes/.test(w))); }
     }
     const t = /timbrado[^\n]{0,16}?(?<!\d)(\d{8})(?!\d)/i.exec(text);   // tolera "Nº" mal leído (N2&)
     if (t) fields.timbrado = t[1];
@@ -1899,11 +1905,11 @@ function parseInvoiceText(raw, clientRuc) {
         // solo importes escritos con separador de miles (1.100.000): un número suelto de 4+ dígitos puede ser cualquier cosa
         const cand = [...sinIds.matchAll(/\d{1,3}(?:[.,]\d{3})+/g)].map(m => parseImportMonto(m[0])).filter(x => x >= 1000 && x < 1e11);
         if (cand.length) {
-            // el total es el importe cuyo IVA (1/11 o 1/21) también figura en la factura
+            // Sin línea de total, solo se acepta un importe si su IVA (1/11 o 1/21) también figura en la factura: así se confirma entre sí.
+            // Un importe suelto no se adivina (podría ser el IVA, una fecha o un teléfono): mejor "sin dato" que un monto equivocado.
             const ivaOf = c => cand.some(a => Math.abs(a - c / 11) <= Math.max(2, c * 0.0005) || Math.abs(a - c / 21) <= Math.max(2, c * 0.0005));
             const conIva = cand.filter(ivaOf);
-            monto = Math.max(...(conIva.length ? conIva : cand));
-            warnings.push(conIva.length ? 'No se encontró la línea de total; se tomó el importe cuyo IVA figura en la factura.' : 'No se encontró la línea de total; se tomó el importe más grande.');
+            if (conIva.length) { monto = Math.max(...conIva); warnings.push('No se encontró la línea de total; se tomó el importe cuyo IVA figura en la factura.'); }
         }
     }
     if (monto) fields.monto = monto;
@@ -2030,6 +2036,53 @@ async function findSifenQr(bitmap) {
     return null;
 }
 
+// ---- Releer el correlativo (7 dígitos grandes a la derecha de "001-001-") solo con dígitos y ampliado: mucho más fiable que la lectura de página ----
+function wordsOf(data) {
+    if (data.words && data.words.length) return data.words;
+    const out = [];
+    (data.blocks || []).forEach(b => (b.paragraphs || []).forEach(p => (p.lines || []).forEach(l => (l.words || []).forEach(w => out.push(w)))));
+    return out;
+}
+async function rereadCorrelativo(worker, canvas, words) {
+    // ancla: el prefijo "NNN-NNN" (establecimiento y punto de emisión), en un solo token o en dos
+    const toks = words.map(w => ({ t: String(w.text || ''), b: w.bbox }));
+    const anchors = [];
+    toks.forEach(a => {
+        if (/(?<!\d)\d{3}\s*[-–—]\s*\d{3}(?!\d)/.test(a.t)) anchors.push(a.b);
+        else if (/^\D{0,2}\d{3}\D{0,2}$/.test(a.t)) toks.forEach(b => {
+            if (b !== a && /^\D{0,2}\d{3}\D{0,2}$/.test(b.t) && b.b.x0 > a.b.x1 && b.b.x0 - a.b.x1 < 260 && Math.abs(b.b.y0 - a.b.y0) < 25)
+                anchors.push({ x0: a.b.x0, x1: b.b.x1, y0: Math.min(a.b.y0, b.b.y0), y1: Math.max(a.b.y1, b.b.y1) });
+        });
+    });
+    anchors.sort((p, q) => p.y0 - q.y0);
+    const seen = new Set(), k = 3, votes = {};
+    await worker.setParameters({ tessedit_char_whitelist: '0123456789-' });
+    // el alto del ancla no coincide siempre con el del número grande: se prueban varios recortes y gana la lectura más repetida
+    const variants = [[47, -15], [30, 0], [15, 15], [35, 55]];
+    for (const a of anchors.slice(0, 3)) {
+        const left = Math.max(0, Math.round(a.x1 - 4)), right = Math.min(canvas.width, Math.round(a.x1 + 420));
+        const key = left + ',' + Math.round(a.y0); if (seen.has(key) || right - left < 60) continue; seen.add(key);
+        for (const [up, down] of variants) {
+            const top = Math.max(0, Math.round(a.y0 - up)), bottom = Math.min(canvas.height, Math.round(a.y1 + down));
+            if (bottom - top < 25) continue;
+            const crop = document.createElement('canvas');
+            crop.width = (right - left) * k; crop.height = (bottom - top) * k;
+            const cx = crop.getContext('2d'); cx.imageSmoothingQuality = 'high';
+            cx.drawImage(canvas, left, top, right - left, bottom - top, 0, 0, crop.width, crop.height);
+            for (const psm of ['8', '13']) {
+                await worker.setParameters({ tessedit_pageseg_mode: psm });
+                const { data } = await worker.recognize(crop);
+                const d = String(data.text || '').replace(/\D/g, '');
+                if (/^\d{7}$/.test(d)) { votes[d] = (votes[d] || 0) + 1; if (votes[d] >= 2) { await worker.setParameters({ tessedit_char_whitelist: '' }); return d; } }   // dos lecturas iguales alcanzan
+            }
+        }
+        if (Object.keys(votes).length) break;   // con el primer ancla que dé lecturas válidas alcanza
+    }
+    await worker.setParameters({ tessedit_char_whitelist: '' });
+    const best = Object.keys(votes).sort((p, q) => votes[q] - votes[p])[0];
+    return best || null;
+}
+
 async function ocrBitmap(bitmap) {
     if (!window.Tesseract) {
         try { await loadScript('https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js'); }
@@ -2047,12 +2100,14 @@ async function ocrBitmap(bitmap) {
             px[i] = px[i + 1] = px[i + 2] = v;
         }
         ctx.putImageData(img, 0, 0);
-        let text = '';
+        let text = '', words = [];
         for (const psm of ['3', '11']) {
             await worker.setParameters({ tessedit_pageseg_mode: psm });
-            const { data } = await worker.recognize(c);
+            const { data } = await worker.recognize(c, {}, { blocks: true, text: true });
             text += (data.text || '') + '\n';
+            words = words.concat(wordsOf(data));
         }
+        try { const num = await rereadCorrelativo(worker, c, words); if (num) text += '#NUM:' + num + '\n'; } catch (e) { /* es un extra: si falla, queda la lectura normal */ }
         return text;
     } finally {
         await worker.terminate();
@@ -2066,7 +2121,25 @@ function clientRucActive() {
 
 // Completa la razón social con la de un comprobante anterior del mismo RUC
 // El nombre ya guardado para ese RUC manda sobre lo que lea el OCR/IA (que puede confundir letras, p. ej. V/Y)
-function useKnownRazon(res) { const k = knownRazon(res.fields.ruc); if (k) res.fields.razon = k; }
+function useKnownRazon(res) {
+    const k = knownRazon(res.fields.ruc); if (k) res.fields.razon = k;
+    snapNumeroPrefix(res);
+}
+// Un proveedor casi siempre usa el mismo establecimiento y punto de emisión: si lo leído difiere en 1 dígito de uno ya cargado, se corrige y se avisa
+function snapNumeroPrefix(res) {
+    const f = res.fields, m = /^(\d{3})-(\d{3})-(\d{7})$/.exec(f.numero || '');
+    if (!m || !f.ruc) return;
+    const list = (state.receipts[state.activeClientId] || []).filter(r => r.ruc === f.ruc && /^\d{3}-\d{3}-\d{7}$/.test(r.numero || ''));
+    const prefixes = [...new Set(list.map(r => r.numero.slice(0, 7)))];
+    const cur = m[1] + '-' + m[2];
+    if (!prefixes.length || prefixes.includes(cur)) return;
+    const diff = p => [...p].filter((ch, i) => ch !== cur[i]).length;
+    const near = prefixes.filter(p => diff(p) === 1);
+    if (near.length === 1) {
+        f.numero = near[0] + '-' + m[3];
+        (res.warnings = res.warnings || []).push(`Se corrigió el prefijo del Nº (${cur} → ${near[0]}) según las facturas anteriores de este proveedor.`);
+    }
+}
 function knownRazon(ruc) {
     const list = state.receipts[state.activeClientId] || [];
     const hit = list.find(r => r.ruc === ruc && r.razon && r.razon !== 'Sin razón social');
