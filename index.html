@@ -1895,10 +1895,16 @@ function parseInvoiceText(raw, clientRuc) {
     let monto = totalLines.length ? Math.max(...totalLines) : 0;
     if (!monto) {
         // sin línea de total: se toma el importe más grande, ignorando RUC, timbrado, teléfonos, fechas y el Nº de factura
-        const sinIds = lines.filter(l => !/ruc|r\.u\.c|timbrado|tel|whatsapp|vigencia|fecha|c\.i\.h|n[°º]|@|\d{3}\s*[-–—]\s*\d{3}/i.test(l) && !/^\d{6,8}\W*$/.test(l)).join('\n');
+        const sinIds = lines.filter(l => !/ruc|r\.u\.c|timbrado|tel|whatsapp|vigencia|fecha|c\.i\.h|n[°º]|@|fax|e-?mail|habilitaci|impres|\btal[.\s]|\d\s?x\s?\d|\bdel\s+[\d.]+\s+a[l1]\b|\d{3}\s*[-–—]\s*\d{3}/i.test(l) && !/^\d{6,8}\W*$/.test(l)).join('\n');
         // solo importes escritos con separador de miles (1.100.000): un número suelto de 4+ dígitos puede ser cualquier cosa
         const cand = [...sinIds.matchAll(/\d{1,3}(?:[.,]\d{3})+/g)].map(m => parseImportMonto(m[0])).filter(x => x >= 1000 && x < 1e11);
-        if (cand.length) { monto = Math.max(...cand); warnings.push('No se encontró la línea de total; se tomó el importe más grande.'); }
+        if (cand.length) {
+            // el total es el importe cuyo IVA (1/11 o 1/21) también figura en la factura
+            const ivaOf = c => cand.some(a => Math.abs(a - c / 11) <= Math.max(2, c * 0.0005) || Math.abs(a - c / 21) <= Math.max(2, c * 0.0005));
+            const conIva = cand.filter(ivaOf);
+            monto = Math.max(...(conIva.length ? conIva : cand));
+            warnings.push(conIva.length ? 'No se encontró la línea de total; se tomó el importe cuyo IVA figura en la factura.' : 'No se encontró la línea de total; se tomó el importe más grande.');
+        }
     }
     if (monto) fields.monto = monto;
 
@@ -1929,6 +1935,19 @@ function parseInvoiceText(raw, clientRuc) {
         if (cands.length > 1) warnings.push('Se encontraron varios RUC; verifique cuál es el del tercero.');
     } else {
         warnings.push('No se encontró un RUC válido (con dígito verificador correcto).');
+    }
+    if (fields.tipo === 'Factura Venta') {
+        // en una venta el tercero es quien compra: su nombre está junto a la etiqueta "Nombre o razón social"; el del encabezado es el del propio cliente
+        let nom = '';
+        lines.forEach((l, i) => {
+            if (nom) return;
+            const m = /raz[oó]n\s*social\s*[:.\-]*\s*(.*)$/i.exec(l);
+            if (!m) return;
+            let v = m[1].replace(/\b(?:r\.?\s?u\.?\s?c|c\.?\s?i)\b.*$/i, '').replace(/[.:_\-\s]+$/, '').replace(/^[.:_\-\s]+/, '').trim();
+            if (!v && lines[i + 1] && !/ruc|direcci|tel/i.test(lines[i + 1])) v = lines[i + 1].replace(/[.:_\-\s]+$/, '').trim();
+            if (/[A-Za-zÁÉÍÓÚÑáéíóúñ]{3}/.test(v) && v.length <= 60) nom = v;
+        });
+        fields.razon = nom.replace(/\s+/g, ' ');
     }
     if (!mineFound && mine) warnings.push('No apareció el RUC del cliente activo en la factura: se supuso factura de compra.');
     ['numero', 'fecha', 'monto'].forEach(k => { if (!fields[k]) warnings.push(`No se pudo leer: ${ { numero: 'Nº de comprobante', fecha: 'fecha', monto: 'monto' }[k] }.`); });
@@ -2152,24 +2171,32 @@ function scanFromAi(r, clientRuc) {
     return { source: 'IA', fields, warnings, missing: [] };
 }
 async function runScanAi() {
-    if (!scanState.bitmap) return;
+    if (!scanState.bitmap) { setScanStatus('Primero elija la foto de la factura.'); return; }
     if (!aiConsent) {
         if (!confirm('La foto se enviará a Google (Gemini) para leerla. Hágalo solo con facturas que pueda compartir. ¿Continuar?')) return;
         aiConsent = true;
     }
-    const btn = document.getElementById('btnScanAi');
+    const btn = document.getElementById('btnScanAi'), label = btn.innerHTML;
     btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Leyendo con IA…';
+    const st = document.getElementById('scanStatus');
+    const status = msg => { setScanStatus(msg); try { st.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {} };
+    const t0 = Date.now(), tick = setInterval(() => status(`Leyendo con IA… ${Math.round((Date.now() - t0) / 1000)} s (puede tardar hasta un minuto si Gemini está ocupado)`), 1000);
     try {
-        setScanStatus('Leyendo con IA…');
+        status('Leyendo con IA… (puede tardar hasta un minuto si Gemini está ocupado)');
         const jpg = drawScaled(scanState.bitmap, 1280, false).toDataURL('image/jpeg', 0.75).split(',')[1];   // ~250 KB: suficiente para leer y liviano para enviar
-        const r = await api('ocrAi', { image: jpg });
+        const r = await Promise.race([
+            api('ocrAi', { image: jpg }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('La IA tardó demasiado en responder. Intente de nuevo en un minuto.')), 90000))
+        ]);
         const res = scanFromAi(r, clientRucActive());
         useKnownRazon(res);
         showScanResult(res);
-        setScanStatus('');
+        clearInterval(tick); setScanStatus('');
     } catch (err) {
-        setScanStatus('No se pudo leer con IA: ' + err.message);
-    } finally { btn.disabled = false; }
+        clearInterval(tick);
+        status('No se pudo leer con IA: ' + err.message);
+    } finally { clearInterval(tick); btn.disabled = false; btn.innerHTML = label; }
 }
 
 function showScanResult(res) {
