@@ -1894,7 +1894,7 @@ function parseInvoiceText(raw, clientRuc) {
     lines.forEach((l, i) => {
         if (/total/i.test(l) && !/sub\s*-?\s*total|liquidaci|total\s*(de\s*)?iva|iva/i.test(l)) {
             totalLines.push(...amountsOf(l));
-            if (!amountsOf(l).length && lines[i + 1]) totalLines.push(...amountsOf(lines[i + 1]));
+            if (!amountsOf(l).length && lines[i + 1] && !/liquidaci|iva|sub\s*-?\s*total/i.test(lines[i + 1])) totalLines.push(...amountsOf(lines[i + 1]));   // la línea siguiente no puede ser la del IVA
         }
     });
     const all = amountsOf(text);
@@ -1910,6 +1910,32 @@ function parseInvoiceText(raw, clientRuc) {
             const ivaOf = c => cand.some(a => Math.abs(a - c / 11) <= Math.max(2, c * 0.0005) || Math.abs(a - c / 21) <= Math.max(2, c * 0.0005));
             const conIva = cand.filter(ivaOf);
             if (conIva.length) { monto = Math.max(...conIva); warnings.push('No se encontró la línea de total; se tomó el importe cuyo IVA figura en la factura.'); }
+            else {
+                // Otra confirmación: el total es la suma de los importes de los ítems (p. ej. 10.000 + 7.000 + 40.000 = 57.000)
+                const vals = [...new Set(cand)].sort((x, y) => y - x).slice(0, 14);
+                const suma = c => {
+                    const rest = vals.filter(v => v < c);
+                    for (let mask = 1; mask < (1 << rest.length); mask++) {
+                        let t = 0, k = 0;
+                        for (let i = 0; i < rest.length; i++) if (mask & (1 << i)) { t += rest[i]; k++; }
+                        if (k >= 2 && Math.abs(t - c) <= 1) return true;
+                    }
+                    return false;
+                };
+                const conSuma = vals.filter(suma);
+                if (conSuma.length) { monto = conSuma[0]; warnings.push('No se encontró la línea de total; se tomó el importe que coincide con la suma de los ítems. Verifíquelo.'); }
+                else {
+                    const mayor = Math.max(...cand);
+                    // Sin total confirmado: si todos los importes leídos son iguales (ítem, valor parcial, total), ese es el total
+                    if (cand.length >= 2 && cand.every(v => v === mayor)) { monto = mayor; warnings.push('No se encontró la línea de total; se tomó el importe que se repite en la factura. Verifíquelo.'); }
+                    else {
+                        // Si no, se toman como ítems y se suman (sin contar el que sea el IVA de otro importe)
+                        const items = cand.filter(c => !cand.some(o => o !== c && (Math.abs(c - o / 11) <= Math.max(2, o * 0.0005) || Math.abs(c - o / 21) <= Math.max(2, o * 0.0005))));
+                        monto = items.reduce((a, b) => a + b, 0);
+                        warnings.push(items.length === 1 ? 'Solo se leyó un importe y se tomó como total, sin poder confirmarlo: verifíquelo.' : `No se encontró la línea de total; se sumaron ${items.length} importes de ítems leídos. Verifique que estén todos.`);
+                    }
+                }
+            }
         }
     }
     if (monto) fields.monto = monto;
