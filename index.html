@@ -1936,6 +1936,18 @@ function parseInvoiceText(raw, clientRuc) {
         // el cliente figura en la factura: o es emisor (venta) o receptor (compra); el emisor va primero
         fields.tipo = digits(cands[0].ruc) === mine ? 'Factura Venta' : 'Factura Compra';
         fields.ruc = otros[0].ruc;
+    } else if (cands.length && mineFound) {
+        // solo figura el RUC del propio cliente: nunca se carga como si fuera el del tercero; se intenta leer el de la etiqueta "RUC o C.I."
+        lines.forEach((l, i) => {
+            if (fields.ruc || !/ruc\s*o?\s*c\.?\s?i/i.test(l)) return;
+            const m = /(\d{5,9})\s*[-–—]\s*(\d)(?!\d)/.exec(l) || (lines[i + 1] ? /(\d{5,9})\s*[-–—]\s*(\d)(?!\d)/.exec(lines[i + 1]) : null);
+            if (!m) return;
+            const r = `${parseInt(m[1], 10)}-${m[2]}`;
+            if (digits(r) === mine) return;
+            fields.ruc = r;
+            if (!validateRuc(r).dvOk) warnings.push('El dígito verificador del RUC leído no coincide: verifique el RUC del tercero.');
+        });
+        if (!fields.ruc) warnings.push('No se pudo leer el RUC del tercero (solo se encontró el del cliente activo).');
     } else if (cands.length) {
         fields.ruc = cands[0].ruc;
         if (cands.length > 1) warnings.push('Se encontraron varios RUC; verifique cuál es el del tercero.');
@@ -1949,7 +1961,7 @@ function parseInvoiceText(raw, clientRuc) {
             if (nom) return;
             const m = /raz[oó]n\s*social\s*[:.\-]*\s*(.*)$/i.exec(l);
             if (!m) return;
-            let v = m[1].replace(/\b(?:r\.?\s?u\.?\s?c|c\.?\s?i)\b.*$/i, '').replace(/[.:_\-\s]+$/, '').replace(/^[.:_\-\s]+/, '').trim();
+            let v = m[1].replace(/\b(?:r\.?\s?u\.?\s?c|c\.?\s?i)\b.*$/i, '').replace(/[.:_\-\s]+$/, '').replace(/^[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+/, '').trim();
             if (!v && lines[i + 1] && !/ruc|direcci|tel/i.test(lines[i + 1])) v = lines[i + 1].replace(/[.:_\-\s]+$/, '').trim();
             if (/[A-Za-zÁÉÍÓÚÑáéíóúñ]{3}/.test(v) && v.length <= 60) nom = v;
         });
