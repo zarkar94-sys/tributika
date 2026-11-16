@@ -1886,7 +1886,7 @@ function parseInvoiceText(raw, clientRuc) {
     const mine = digits(clientRuc);
     fields.rucCandidates = cands.map(c => c.ruc);
     const otros = cands.filter(c => digits(c.ruc) !== mine);
-    const mineFound = cands.some(c => digits(c.ruc) === mine);
+    const mineFound = cands.some(c => digits(c.ruc) === mine) || (mine.length >= 6 && new RegExp('(?<!\\d)' + mine + '(?!\\d)').test(text.replace(/(\d)\s+(?=\d)/g, '$1')));
 
     // Importes
     const amountsOf = l => [...l.matchAll(/\d{1,3}(?:[.,]\d{3})+|\d{4,}/g)].map(m => parseImportMonto(m[0])).filter(x => x > 0);
@@ -1926,7 +1926,7 @@ function parseInvoiceText(raw, clientRuc) {
     const SOC = /\b(S\.?\s?A\.?(?:\s?E\.?\s?C\.?\s?A\.?)?|S\.?\s?R\.?\s?L\.?|E\.?\s?A\.?\s?S\.?|S\.?\s?A\.?\s?S\.?)(?=\W|$)/;
     const razonSoc = lines.slice(0, 40).find(l => SOC.test(l) && /[A-Za-zÁÉÍÓÚÑ]{3}/.test(l) && l.length <= 60 && !/comercio|programadoras|servicios|actividades|otros|productos/i.test(l));
     const razon = razonSoc || lines.slice(0, 8).find(l => /[A-Za-zÁÉÍÓÚÑ]{3}/.test(l) && l.length >= 5 && l.length <= 60
-        && !/factura|timbrado|ruc|fecha|tel|direcci|vigencia|n[úu]mero|www|@|comprobante|original|duplicado/i.test(l)
+        && !/factura|timbrado|ruc|fecha|tel|direcci|vigencia|n[úu]mero|www|@|comprobante|original|duplicado|raz[oó]n\s*social/i.test(l)
         && (l.match(/[A-Za-zÁÉÍÓÚÑ ]/g) || []).length / l.length > 0.8);
     if (razon) { const m = razonSoc && SOC.exec(razon); fields.razon = (m ? razon.slice(0, m.index + m[0].length) : razon).replace(/\s+/g, ' ').trim(); }
 
@@ -1936,16 +1936,23 @@ function parseInvoiceText(raw, clientRuc) {
         // el cliente figura en la factura: o es emisor (venta) o receptor (compra); el emisor va primero
         fields.tipo = digits(cands[0].ruc) === mine ? 'Factura Venta' : 'Factura Compra';
         fields.ruc = otros[0].ruc;
-    } else if (cands.length && mineFound) {
+    } else if (mineFound) {
         // solo figura el RUC del propio cliente: nunca se carga como si fuera el del tercero; se intenta leer el de la etiqueta "RUC o C.I."
+        const rucFrom = str => {
+            const h = /(\d{5,9})\s*[-–—]\s*(\d)(?!\d)/.exec(str);
+            if (h) return { r: `${parseInt(h[1], 10)}-${h[2]}`, sure: true };
+            for (const g of (str.match(/\d{7,10}/g) || [])) {   // pegado: cuerpo + dígito verificador; solo se acepta si el dígito coincide
+                const body = g.slice(0, -1).replace(/^0+/, '');
+                if (body && String(calcDv(body)) === g.slice(-1)) return { r: `${parseInt(body, 10)}-${g.slice(-1)}`, sure: true };
+            }
+            return null;
+        };
         lines.forEach((l, i) => {
-            if (fields.ruc || !/ruc\s*o?\s*c\.?\s?i/i.test(l)) return;
-            const m = /(\d{5,9})\s*[-–—]\s*(\d)(?!\d)/.exec(l) || (lines[i + 1] ? /(\d{5,9})\s*[-–—]\s*(\d)(?!\d)/.exec(lines[i + 1]) : null);
-            if (!m) return;
-            const r = `${parseInt(m[1], 10)}-${m[2]}`;
-            if (digits(r) === mine) return;
-            fields.ruc = r;
-            if (!validateRuc(r).dvOk) warnings.push('El dígito verificador del RUC leído no coincide: verifique el RUC del tercero.');
+            if (fields.ruc || !/ruc\s*o?\s*c\.?\s?[i1l]/i.test(l)) return;
+            for (const k of [l, lines[i + 1] || '', lines[i + 2] || '']) {
+                const f = rucFrom(k);
+                if (f && digits(f.r) !== mine) { fields.ruc = f.r; if (!validateRuc(f.r).dvOk) warnings.push('El dígito verificador del RUC leído no coincide: verifique el RUC del tercero.'); return; }
+            }
         });
         if (!fields.ruc) warnings.push('No se pudo leer el RUC del tercero (solo se encontró el del cliente activo).');
     } else if (cands.length) {
@@ -2105,7 +2112,8 @@ async function ocrBitmap(bitmap) {
     });
     try {
         // Canal mínimo (la tinta de cualquier color, p. ej. el Nº rojo, queda oscura) y dos modos de lectura: página y texto disperso
-        const c = drawScaled(bitmap, 2200, false), ctx = c.getContext('2d', { willReadFrequently: true });
+        // 1200 px de lado largo: Tesseract pierde los dígitos grandes (Nº de factura) con fotos más grandes; con 1200 leyó todo en las pruebas
+        const c = drawScaled(bitmap, 1200, false), ctx = c.getContext('2d', { willReadFrequently: true });
         const img = ctx.getImageData(0, 0, c.width, c.height), px = img.data;
         for (let i = 0; i < px.length; i += 4) {
             const v = Math.max(0, Math.min(255, (Math.min(px[i], px[i + 1], px[i + 2]) - 128) * 1.3 + 128));
